@@ -1,0 +1,264 @@
+//CarND-MPC-Project/main.cpp
+#include <math.h>
+#include <uWS/uWS.h>
+#include <chrono>
+#include <iostream>
+#include <thread>
+#include <vector>
+#include "Eigen-3.3/Eigen/Core"
+#include "Eigen-3.3/Eigen/QR"
+#include "MPC.h"
+#include "json.hpp"
+using namespace std;
+
+// for convenience
+using json = nlohmann::json;
+/////////////////////////////////////////////////////////////////////////////////////
+// For converting back and forth between radians and degrees.
+constexpr double pi() { return M_PI; }
+double deg2rad(double x) { return x * pi() / 180; }
+double rad2deg(double x) { return x * 180 / pi(); }
+
+// Checks if the SocketIO event has JSON data.
+// If there is data the JSON object in string format will be returned,
+// else the empty string "" will be returned.
+string hasData(string s) {
+  auto found_null = s.find("null");
+  auto b1 = s.find_first_of("[");
+  auto b2 = s.rfind("}]");
+  if (found_null != string::npos) {
+    return "";
+  } else if (b1 != string::npos && b2 != string::npos) {
+    return s.substr(b1, b2 - b1 + 2);
+  }
+  return "";
+}
+/////////////////////////////////////////////////////////////////////////////////////
+// Evaluate a polynomial.
+double polyeval(Eigen::VectorXd coeffs, double x) {
+  double result = 0.0;
+  for (int i = 0; i < coeffs.size(); i++) {
+    result += coeffs[i] * pow(x, i);
+  }
+  return result;
+}
+/////////////////////////////////////////////////////////////////////////////////////
+// Fit a polynomial.
+// Adapted from
+// https://github.com/JuliaMath/Polynomials.jl/blob/master/src/Polynomials.jl#L676-L716
+Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
+                        int order) {
+  assert(xvals.size() == yvals.size());
+  assert(order >= 1 && order <= xvals.size() - 1);
+  Eigen::MatrixXd A(xvals.size(), order + 1);
+
+  for (int i = 0; i < xvals.size(); i++) {
+    A(i, 0) = 1.0;
+  }
+
+  for (int j = 0; j < xvals.size(); j++) {
+    for (int i = 0; i < order; i++) {
+      A(j, i + 1) = A(j, i) * xvals(j);
+    }
+  }
+
+  auto Q = A.householderQr();
+  auto result = Q.solve(yvals);
+  return result;
+}
+/////////////////////////////////////////////////////////////////////////////////////
+Eigen::MatrixXd mapToCarCoordinate (double x, double y, double psi, 
+    vector<double> & ptsx, vector<double> & ptsy) 
+{
+    int length = ptsx.size();
+    Eigen::MatrixXd waypoints = Eigen::MatrixXd(2,length);
+    for (int i=0; i < length ; ++i){
+      waypoints(0,i) =   cos(psi) * (ptsx[i] - x) + sin(psi) * (ptsy[i] - y);
+      waypoints(1,i) =  -sin(psi) * (ptsx[i] - x) + cos(psi) * (ptsy[i] - y);  
+    } 
+    
+    return waypoints;
+
+}
+/////////////////////////////////////////////////////////////////////////////////////
+double computeCte(Eigen::VectorXd coeffs, double power) {
+    return polyeval(coeffs, power);  
+}
+
+// In vehicle coordinates the orientation error epsi is 
+// -atan(c1 + c2*x + c3* x^2), but the car is always at x=0.
+double computeEpsi(Eigen::VectorXd coeffs) {
+    return -atan(coeffs[1]);  
+}
+/////////////////////////////////////////////////////////////////////////////////////
+
+void predict_current_state (Eigen::VectorXd &state,double v, double delta, double throttle, double cte, double epsi, double dt, double Lf)
+{
+    //cout << "IN 1" << endl;
+    double current_px   = 0.0 + v * dt;
+    double current_py   = 0.0;
+    double current_psi  = 0.0 + v * (-delta) / Lf * dt;
+    //cout << "IN 2" << endl;
+    double current_v    = v +  throttle * dt;
+    double current_cte  = cte + v * sin(epsi) * dt;
+    double current_epsi = epsi + v * (-delta) / Lf * dt;
+    state << current_px, current_py, current_psi, current_v, current_cte, current_epsi;
+    //cout << "IN 3" << endl;
+}
+/////////////////////////////////////////////////////////////////////////////////////
+void check_parameter ()
+{
+}
+void parameter_init ()
+{
+}
+/////////////////////////////////////////////////////////////////////////////////////
+
+extern double dt;
+extern double Lf;
+
+int main() {
+  uWS::Hub h;
+
+  // MPC is initialized here!
+  parameter_init ();
+  MPC mpc;
+
+  h.onMessage([&mpc](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+                     uWS::OpCode opCode) {
+    // "42" at the start of the message means there's a websocket message event.
+    // The 4 signifies a websocket message
+    // The 2 signifies a websocket event
+    string sdata = string(data).substr(0, length);
+    if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2') {
+      string s = hasData(sdata);
+      if (s != "") {
+        auto j = json::parse(s);
+        string event = j[0].get<string>();
+        if (event == "telemetry") {
+          vector<double> ptsx   = j[1]["ptsx"];
+          vector<double> ptsy   = j[1]["ptsy"];
+          double px             = j[1]["x"];
+          double py             = j[1]["y"];
+          double psi            = j[1]["psi"];
+          double v              = j[1]["speed"];
+          double delta          = j[1]["steering_angle"]; //  steering_angle
+          double throttle       = j[1]["throttle"];
+         
+/////////////////////////////////////////////////////////////////////////////////////
+          //v = v *MILE_HR_METER_SEC;
+/////////////////////////////////////////////////////////////////////////////////////
+          Eigen::MatrixXd waypoints = mapToCarCoordinate(px,py,psi,ptsx,ptsy);
+/////////////////////////////////////////////////////////////////////////////////////
+          /*
+          * TODO: Calculate steering angle and throttle using MPC.
+          *
+          * Both are in between [-1, 1].
+          *
+          */
+          Eigen::VectorXd coeffs = polyfit(waypoints.row(0), waypoints.row(1), 3);
+          double cte             = computeCte (coeffs, 0);
+          double epsi            = computeEpsi(coeffs);
+
+          Eigen::VectorXd Ptsx = waypoints.row(0);
+          Eigen::VectorXd Ptsy = waypoints.row(1);
+ /////////////////////////////////////////////////////////////////////////////////////
+ /////////////////////////////////////////////////////////////////////////////////////
+          // Create  the predicted state values
+          Eigen::VectorXd state(6);
+          predict_current_state (state, v, delta, throttle, cte, epsi, dt, Lf);
+          //state << 0, 0, 0, v, cte, epsi;
+          auto solution = mpc.Solve(state, coeffs);
+ /////////////////////////////////////////////////////////////////////////////////////
+ /////////////////////////////////////////////////////////////////////////////////////
+          int tune_latency_response = 0; // increase this value at higher speed (v)
+          double steer_value = solution.Delta.at(tune_latency_response);
+          double throttle_value= solution.A.at(tune_latency_response);
+/////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////
+          json msgJson;
+          // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
+          // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
+          msgJson["steering_angle"] = -steer_value/(deg2rad(25));
+          msgJson["throttle"]       = throttle_value;
+
+/////////////////////////////////////////////////////////////////////////////////////
+
+          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
+          // the points in the simulator are connected by a Green line
+
+          msgJson["mpc_x"] = solution.X;
+          msgJson["mpc_y"] = solution.Y;
+
+
+/////////////////////////////////////////////////////////////////////////////////////
+          // the points in the simulator are connected by a Yellow line
+          vector<double> next_x_vals;
+          vector<double> next_y_vals;
+
+          for (unsigned i=0 ; i < ptsx.size(); ++i) {
+            next_x_vals.push_back(Ptsx(i));
+            next_y_vals.push_back(Ptsy(i));
+          }
+          msgJson["next_x"] = next_x_vals;
+          msgJson["next_y"] = next_y_vals;
+/////////////////////////////////////////////////////////////////////////////////////
+
+          auto msg = "42[\"steer\"," + msgJson.dump() + "]";
+          //std::cout << msg << std::endl;
+
+          // Latency
+          // The purpose is to mimic real driving conditions where
+          // the car does actuate the commands instantly.
+          //
+          // Feel free to play around with this value but should be to drive
+          // around the track with 100ms latency.
+          //
+          // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
+          // SUBMITTING.
+/////////////////////////////////////////////////////////////////////////////////////
+          this_thread::sleep_for(chrono::milliseconds(100));
+          ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+        }
+      } else {
+        // Manual driving
+        std::string msg = "42[\"manual\",{}]";
+        ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+      }
+    }
+  });
+
+  // We don't need this since we're not using HTTP but if it's removed the
+  // program
+  // doesn't compile :-(
+  h.onHttpRequest([](uWS::HttpResponse *res, uWS::HttpRequest req, char *data,
+                     size_t, size_t) {
+    const std::string s = "<h1>Hello world!</h1>";
+    if (req.getUrl().valueLength == 1) {
+      res->end(s.data(), s.length());
+    } else {
+      // i guess this should be done more gracefully?
+      res->end(nullptr, 0);
+    }
+  });
+
+  h.onConnection([&h](uWS::WebSocket<uWS::SERVER> ws, uWS::HttpRequest req) {
+    std::cout << "Connected!!!" << std::endl;
+  });
+
+  h.onDisconnection([&h](uWS::WebSocket<uWS::SERVER> ws, int code,
+                         char *message, size_t length) {
+    ws.close();
+    std::cout << "Disconnected" << std::endl;
+  });
+
+  int port = 4567;
+  if (h.listen(port)) {
+    std::cout << "Listening to port " << port << std::endl;
+  } else {
+    std::cerr << "Failed to listen to port" << std::endl;
+    return -1;
+  }
+  h.run();
+} // main()

@@ -1,0 +1,109 @@
+////////////////////////////////////////////////////
+void ParticleFilter::addRandomNoise (Particle &my_particle, double x, double std_x, double y, double std_y, double theta, double std_theta)
+{
+    static default_random_engine gen;
+    // Creates a normal (Gaussian) distribution for x, y and theta (yaw).
+    normal_distribution<double> dist_x(x, std_x );
+    normal_distribution<double> dist_y(y, std_y );
+    normal_distribution<double> dist_theta(theta, std_theta);
+    my_particle.x      = dist_x(gen);
+    my_particle.y      = dist_y(gen);
+    my_particle.theta  = dist_theta(gen);
+}
+
+
+void ParticleFilter::transform_car_toMap_coordinate (std::vector<LandmarkObs> &map_observation, std::vector<LandmarkObs> obs, Particle &p)
+{
+    double cos_theta = cos(p.theta);
+    double sin_theta = sin(p.theta);
+    for (int j = 0; j < obs.size(); j++) {
+        LandmarkObs tmp;
+        tmp.x  = obs[j].x * cos_theta - obs[j].y * sin_theta + p.x;
+        tmp.y  = obs[j].x * sin_theta + obs[j].y * cos_theta + p.y;
+        tmp.id = j;
+        map_observation.push_back(tmp);
+    }
+
+}
+void ParticleFilter::create_predicted_landmarks (vector<LandmarkObs> &predicted_landmarks, Map map_landmarks, Particle &p, double sensor_range)
+{
+    for(int k = 0; k < map_landmarks.landmark_list.size(); k++)
+    {
+      auto lm = map_landmarks.landmark_list[k];
+      // single_landmark_s
+      //std::vector<single_landmark_s>
+      //double distance = dist(p.x, p.y, lm.x_f, lm.y_f);
+      //bool got_it = ( distance < sensor_range)
+      bool got_it = ((fabs((p.x - lm.x_f )) <= sensor_range) && (fabs((p.y -  lm.y_f )) <= sensor_range)) ;
+      if( got_it ){ // if the landmark is within the sensor range, save it to predictions
+        predicted_landmarks.push_back(LandmarkObs{lm.id_i, lm.x_f, lm.y_f});
+      }
+    }
+}
+
+void ParticleFilter::compute_particle_weight (Particle &p, vector<LandmarkObs> predicted_landmarks,  vector<LandmarkObs> map_observation, double std_landmark[])
+{
+    //const double gauss_norm       = (2 * M_PI * std_landmark[0] * std_landmark[1]);
+    //const double two_sig_x_square = (2 * pow(std_landmark[0], 2));
+    //const double two_sig_y_square = (2 * pow(std_landmark[1], 2));
+    p.weight = 1.0;
+
+    for (int i = 0; i < map_observation.size(); i++ ) 
+    {
+        auto obs_m = map_observation[i]; 
+        for (int j = 0 ; j < predicted_landmarks.size(); j++)
+        {
+            auto landmark = predicted_landmarks[j];
+            if (obs_m.id  == landmark.id) {
+
+                double x_term = pow(obs_m.x - landmark.x, 2) / two_sig_x_square;
+                double y_term = pow(obs_m.y - landmark.y, 2) / two_sig_y_square;
+                double w = exp(-1.0 *(x_term + y_term)) / gauss_norm;
+                p.weight *=  w;
+            }
+        }
+    }
+    //cout << "p.weight : " << p.weight << endl;
+}
+///////////////////////
+
+// TODO:
+// o Update the weights of each particle using a mult-variate Gaussian distribution.
+//       x You can read more about this distribution here:
+//             https://en.wikipedia.org/wiki/Multivariate_normal_distribution
+// NOTE:
+// o The observations are given in the VEHICLE'S coordinate system.
+// o Keep in mind that this transformation requires both rotation AND
+// o translation (but no scaling).
+//       The following is a good resource for the theory:
+//       https://www.willamette.edu/~gorr/classes/GeneralGraphics/Transforms/transforms2d.htm and
+//       the following is a good resource for the actual equation to implement (look at equation 3.33
+//       http://planning.cs.uiuc.edu/node99.html
+
+void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
+                const std::vector<LandmarkObs> observations, Map map_landmarks) 
+{
+
+    double total_weight = 0.0;
+    for (int i = 0; i < particles.size(); i++) {
+        vector<LandmarkObs> map_observation;
+        vector<LandmarkObs> predicted_landmarks;
+
+        // Transformed from car coordinate to map coordinate
+        transform_car_toMap_coordinate (map_observation, observations, particles[i]);
+
+        create_predicted_landmarks (predicted_landmarks, map_landmarks, particles[i], sensor_range);
+
+        dataAssociation(predicted_landmarks, map_observation, sensor_range);
+
+        compute_particle_weight (particles[i], predicted_landmarks, map_observation, std_landmark);
+
+        total_weight += particles[i].weight;
+    }
+    for (int i = 0; i < particles.size(); i++) {
+        particles[i].weight /= total_weight;
+        weights[i] = particles[i].weight;
+    }
+
+}
+
